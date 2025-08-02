@@ -48,35 +48,38 @@ unsigned long lastNavPress = 0;
 float lastTemp = NAN;
 float lastHumidity = NAN;
 
-// Timezone data with city names
+// Timezone data with city names and DST support
 struct TimezoneInfo {
   const char* cityName;
   const char* displayName;
   int offsetSeconds;
+  bool observesDST;
+  int dstOffsetSeconds; // Offset during DST
 };
 
 TimezoneInfo timezones[] = {
-  {"Honolulu", "UTC-10:00 HST", -36000},
-  {"Anchorage", "UTC-09:00 AKST", -32400},
-  {"Los Angeles", "UTC-08:00 PST", -28800},
-  {"Denver", "UTC-07:00 MST", -25200},
-  {"Chicago", "UTC-06:00 CST", -21600},
-  {"New York", "UTC-05:00 EST", -18000},
-  {"Caracas", "UTC-04:00", -14400},
-  {"Buenos Aires", "UTC-03:00", -10800},
-  {"London", "UTC+00:00 GMT", 0},
-  {"Paris", "UTC+01:00 CET", 3600},
-  {"Cairo", "UTC+02:00 EET", 7200},
-  {"Moscow", "UTC+03:00", 10800},
-  {"Dubai", "UTC+04:00", 14400},
-  {"Karachi", "UTC+05:00", 18000},
-  {"Delhi", "UTC+05:30 IST", 19800},
-  {"Dhaka", "UTC+06:00", 21600},
-  {"Bangkok", "UTC+07:00", 25200},
-  {"Beijing", "UTC+08:00 CST", 28800},
-  {"Tokyo", "UTC+09:00 JST", 32400},
-  {"Sydney", "UTC+10:00", 36000},
-  {"Auckland", "UTC+12:00", 43200}
+  {"Honolulu", "UTC-10:00 HST", -36000, false, -36000},
+  {"Anchorage", "UTC-09:00 AKST", -32400, true, -28800},
+  {"Los Angeles", "UTC-08:00 PST", -28800, true, -25200},
+  {"Denver", "UTC-07:00 MST", -25200, true, -21600},
+  {"Phoenix", "UTC-07:00 MST", -25200, false, -25200}, // Arizona doesn't observe DST
+  {"Chicago", "UTC-06:00 CST", -21600, true, -18000},
+  {"New York", "UTC-05:00 EST", -18000, true, -14400},
+  {"Caracas", "UTC-04:00", -14400, false, -14400},
+  {"Buenos Aires", "UTC-03:00", -10800, false, -10800},
+  {"London", "UTC+00:00 GMT", 0, true, 3600},
+  {"Paris", "UTC+01:00 CET", 3600, true, 7200},
+  {"Cairo", "UTC+02:00 EET", 7200, false, 7200},
+  {"Moscow", "UTC+03:00", 10800, false, 10800},
+  {"Dubai", "UTC+04:00", 14400, false, 14400},
+  {"Karachi", "UTC+05:00", 18000, false, 18000},
+  {"Delhi", "UTC+05:30 IST", 19800, false, 19800},
+  {"Dhaka", "UTC+06:00", 21600, false, 21600},
+  {"Bangkok", "UTC+07:00", 25200, false, 25200},
+  {"Beijing", "UTC+08:00 CST", 28800, false, 28800},
+  {"Tokyo", "UTC+09:00 JST", 32400, false, 32400},
+  {"Sydney", "UTC+10:00", 36000, true, 39600},
+  {"Auckland", "UTC+12:00", 43200, true, 46800}
 };
 const int TIMEZONE_COUNT = sizeof(timezones) / sizeof(timezones[0]);
 
@@ -93,6 +96,46 @@ const int TIMEZONE_COUNT = sizeof(timezones) / sizeof(timezones[0]);
 // Animation variables
 unsigned long animationTime = 0;
 int scrollOffset = 0;
+
+// DST calculation function
+bool isDST(int year, int month, int day, int hour, bool isNorthern) {
+  if (isNorthern) {
+    // Northern Hemisphere DST (US/Europe style)
+    // DST starts second Sunday in March, ends first Sunday in November
+    if (month < 3 || month > 11) return false;
+    if (month > 3 && month < 11) return true;
+    
+    if (month == 3) {
+      // March - DST starts second Sunday
+      int secondSunday = 14 - ((1 + year * 5 / 4) % 7);
+      return day > secondSunday || (day == secondSunday && hour >= 2);
+    }
+    
+    if (month == 11) {
+      // November - DST ends first Sunday
+      int firstSunday = 7 - ((1 + year * 5 / 4) % 7);
+      return day < firstSunday || (day == firstSunday && hour < 2);
+    }
+  } else {
+    // Southern Hemisphere DST (Australia/NZ style)
+    // DST starts first Sunday in October, ends first Sunday in April
+    if (month > 4 && month < 10) return false;
+    if (month < 4 || month > 10) return true;
+    
+    if (month == 10) {
+      // October - DST starts first Sunday
+      int firstSunday = 7 - ((1 + year * 5 / 4) % 7);
+      return day > firstSunday || (day == firstSunday && hour >= 2);
+    }
+    
+    if (month == 4) {
+      // April - DST ends first Sunday
+      int firstSunday = 7 - ((1 + year * 5 / 4) % 7);
+      return day < firstSunday || (day == firstSunday && hour < 3);
+    }
+  }
+  return false;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -164,18 +207,118 @@ void updateWeatherData() {
 }
 
 void showStartupScreen() {
-  display.clearDisplay();
-  display.setTextSize(2);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(20, 15);
-  display.println("ESP");
-  display.setCursor(15, 35);
-  display.println("CLOCK");
+  // Animated startup screen with progress bar
+  const int totalSteps = 50;
+  const int animationDuration = 3000; // 3 seconds
+  const int stepDelay = animationDuration / totalSteps;
   
-  // Draw border
-  display.drawRect(0, 0, 128, 64, SSD1306_WHITE);
+  for (int step = 0; step <= totalSteps; step++) {
+    display.clearDisplay();
+    
+    // Animated border that draws progressively
+    int borderProgress = map(step, 0, totalSteps, 0, 256);
+    if (borderProgress > 0) {
+      // Draw animated rounded border
+      for (int i = 0; i < min(borderProgress, 128); i++) {
+        display.drawPixel(i, 0, SSD1306_WHITE); // Top
+        if (i < 64) display.drawPixel(127, i, SSD1306_WHITE); // Right
+      }
+      if (borderProgress > 128) {
+        for (int i = 0; i < min(borderProgress - 128, 128); i++) {
+          display.drawPixel(127 - i, 63, SSD1306_WHITE); // Bottom
+          if (i < 64) display.drawPixel(0, 63 - i, SSD1306_WHITE); // Left
+        }
+      }
+    }
+    
+    // Title animation - fade in effect
+    if (step > 10) {
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(30, 10);
+      display.println("ESP DESK");
+      display.setCursor(25, 22);
+      display.println("COMPANION");
+    }
+    
+    // Main logo animation - bouncing effect
+    if (step > 20) {
+      int bounce = sin((step - 20) * 0.3) * 2;
+      display.setTextSize(2);
+      display.setCursor(45, 32 + bounce);
+      display.println("EDC");
+    }
+    
+    // Progress bar animation
+    if (step > 5) {
+      int progressWidth = map(step - 5, 0, totalSteps - 5, 0, 100);
+      
+      // Progress bar background
+      display.drawRect(14, 50, 100, 8, SSD1306_WHITE);
+      
+      // Progress bar fill with animation
+      if (progressWidth > 0) {
+        display.fillRect(15, 51, progressWidth - 2, 6, SSD1306_WHITE);
+      }
+      
+      // Progress percentage
+      display.setTextSize(1);
+      display.setCursor(120, 50);
+      int percentage = map(step, 0, totalSteps, 0, 100);
+      display.print(percentage);
+      display.print("%");
+      
+      // Loading text with dots animation
+      display.setCursor(30, 40);
+      display.print("Loading");
+      int dots = (step / 10) % 4;
+      for (int i = 0; i < dots; i++) {
+        display.print(".");
+      }
+    }
+    
+    // Decorative elements - spinning dots around the main text
+    if (step > 15) {
+      float angle = (step - 15) * 0.2;
+      int centerX = 64, centerY = 30;
+      int radius = 25;
+      
+      for (int i = 0; i < 6; i++) {
+        float dotAngle = angle + (i * PI / 3);
+        int x = centerX + cos(dotAngle) * radius;
+        int y = centerY + sin(dotAngle) * radius;
+        if (x >= 0 && x < 128 && y >= 0 && y < 64) {
+          display.fillCircle(x, y, 1, SSD1306_WHITE);
+        }
+      }
+    }
+    
+    // Pulsing effect for the final steps
+    if (step > 45) {
+      int pulse = (step - 45) * 20;
+      display.drawCircle(64, 32, 30 + pulse, SSD1306_WHITE);
+      display.drawCircle(64, 32, 35 + pulse, SSD1306_WHITE);
+    }
+    
+    display.display();
+    delay(stepDelay);
+  }
+  
+  // Final static screen for a moment
+  display.clearDisplay();
+  display.drawRoundRect(2, 2, 124, 60, 8, SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 15);
+  display.println("ESP DESK COMPANION");
+  display.setTextSize(2);
+  display.setCursor(45, 30);
+  display.println("EDC");
+  display.setTextSize(1);
+  display.setCursor(40, 45);
+  display.println("Ready!");
   display.display();
-  delay(2000);
+  delay(1000);
 }
 
 void drawWiFiIcon(bool connected) {
@@ -229,29 +372,34 @@ String formatTime12Hour(int hours, int minutes, int seconds = -1) {
 String getAdditionalTimezoneTime() {
   if (selectedAdditionalTimezone == -1 || !wifiConnected) return "";
   
-  // Get current IST time components
-  int istHours = timeClient.getHours();
-  int istMinutes = timeClient.getMinutes();
+  // Get current UTC time
+  time_t utcTime = timeClient.getEpochTime();
+  struct tm * utcTimeInfo = gmtime(&utcTime);
   
-  // Convert IST to target timezone
-  // Calculate the difference between target timezone and IST
-  int offsetDifference = timezones[selectedAdditionalTimezone].offsetSeconds - TIMEZONE_OFFSET_SECONDS;
+  // Get the timezone info
+  TimezoneInfo tz = timezones[selectedAdditionalTimezone];
   
-  // Convert to minutes for easier calculation
-  int offsetMinutes = offsetDifference / 60;
+  // Determine if DST is active for this timezone
+  bool dstActive = false;
+  if (tz.observesDST) {
+    // Check if it's a northern or southern hemisphere location based on city
+    bool isNorthern = true;
+    if (strcmp(tz.cityName, "Sydney") == 0 || strcmp(tz.cityName, "Auckland") == 0) {
+      isNorthern = false; // Southern hemisphere
+    }
+    
+    dstActive = isDST(utcTimeInfo->tm_year + 1900, utcTimeInfo->tm_mon + 1, 
+                      utcTimeInfo->tm_mday, utcTimeInfo->tm_hour, isNorthern);
+  }
   
-  // Add the offset to current IST time
-  int totalMinutes = istHours * 60 + istMinutes + offsetMinutes;
+  // Use appropriate offset
+  int offsetToUse = dstActive ? tz.dstOffsetSeconds : tz.offsetSeconds;
   
-  // Handle day rollover
-  while (totalMinutes < 0) totalMinutes += 24 * 60;  // Add a day
-  while (totalMinutes >= 24 * 60) totalMinutes -= 24 * 60;  // Subtract a day
+  // Calculate target time
+  time_t targetTime = utcTime + offsetToUse;
+  struct tm * targetTimeInfo = gmtime(&targetTime);
   
-  // Convert back to hours and minutes
-  int targetHours = totalMinutes / 60;
-  int targetMinutes = totalMinutes % 60;
-  
-  return formatTime12Hour(targetHours, targetMinutes);
+  return formatTime12Hour(targetTimeInfo->tm_hour, targetTimeInfo->tm_min);
 }
 
 void loop() {
